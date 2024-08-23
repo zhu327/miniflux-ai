@@ -1,5 +1,5 @@
 use base64;
-use futures::future::join_all;
+use futures::{stream, StreamExt};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -237,12 +237,15 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     .unwrap();
 
     // 生成摘要并更新的并发任务
-    let tasks: Vec<_> = entries
-        .entries
-        .into_iter()
-        .map(|entry| generate_and_update_entry(&config, entry))
-        .collect();
+    let max_concurrent_tasks = 5;
 
-    // 执行所有任务并等待结果
-    join_all(tasks).await;
+    // Create a stream to process tasks with concurrency limit
+    let _: Vec<_> = stream::iter(entries.entries)
+        .map(|entry| {
+            let config = &config;
+            async move { generate_and_update_entry(config, entry).await }
+        })
+        .buffer_unordered(max_concurrent_tasks)
+        .collect()
+        .await;
 }
