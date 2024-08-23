@@ -23,7 +23,7 @@ This Cloudflare Workers tool automatically adds AI-generated summaries to articl
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/miniflux-ai.git
+   git clone https://github.com/zhu327/miniflux-ai.git
    cd miniflux-ai
    ```
 
