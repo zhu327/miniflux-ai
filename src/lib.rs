@@ -166,7 +166,7 @@ async fn generate_and_update_entry(
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "Please summarize the content of the article under 50 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过50个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
+            content: "Please summarize the content of the article under 100 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过100个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
         },
         Message {
             role: "user".to_string(),
