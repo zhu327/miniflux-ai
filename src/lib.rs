@@ -166,7 +166,7 @@ async fn generate_and_update_entry(
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "Please summarize the content of the article under 100 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过100个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
+            content: "Please summarize the content of the article under 150 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过150个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
         },
         Message {
             role: "user".to_string(),
@@ -186,20 +186,22 @@ async fn generate_and_update_entry(
     )
     .await
     {
-        let updated_content = format!(
-            "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{}</code></pre><hr><br />{}",
-            summary, content
-        );
+        if !summary.trim().is_empty() {
+            let updated_content = format!(
+                "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{}</code></pre><hr><br />{}",
+                summary, content
+            );
 
-        // Update the entry
-        update_entry(
-            &config.miniflux.url,
-            &config.miniflux.username,
-            &config.miniflux.password,
-            entry.id,
-            &updated_content,
-        )
-        .await?;
+            // Update the entry
+            update_entry(
+                &config.miniflux.url,
+                &config.miniflux.username,
+                &config.miniflux.password,
+                entry.id,
+                &updated_content,
+            )
+            .await?;
+        }
     }
 
     Ok(())
