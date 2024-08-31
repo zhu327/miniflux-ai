@@ -1,4 +1,4 @@
-use base64;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::{stream, StreamExt};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
@@ -38,7 +38,7 @@ async fn get_entries(
     // 使用 Basic Auth 进行身份验证
     let auth = format!(
         "Basic {}",
-        base64::encode(format!("{}:{}", username, password))
+        STANDARD.encode(format!("{}:{}", username, password))
     );
 
     // 发送 GET 请求
@@ -62,9 +62,10 @@ async fn update_entry(
     content: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
+
     let auth = format!(
         "Basic {}",
-        base64::encode(format!("{}:{}", username, password))
+        STANDARD.encode(format!("{}:{}", username, password))
     );
 
     let url = format!("{}/v1/entries/{}", base_url, id);
@@ -166,7 +167,7 @@ async fn generate_and_update_entry(
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "Please summarize the content of the article under 100 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过100个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
+            content: "Please summarize the content of the article under 150 words in Chinese. Do not add any additional Character、markdown language to the result text. 请用不超过150个汉字概括文章内容。结果文本中不要添加任何额外的字符、Markdown语言。".to_string(),
         },
         Message {
             role: "user".to_string(),
