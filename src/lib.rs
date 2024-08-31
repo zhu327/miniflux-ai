@@ -187,20 +187,22 @@ async fn generate_and_update_entry(
     )
     .await
     {
-        let updated_content = format!(
-            "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{}</code></pre><hr><br />{}",
-            summary, content
-        );
+        if !summary.trim().is_empty() {
+            let updated_content = format!(
+                "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{}</code></pre><hr><br />{}",
+                summary, content
+            );
 
-        // Update the entry
-        update_entry(
-            &config.miniflux.url,
-            &config.miniflux.username,
-            &config.miniflux.password,
-            entry.id,
-            &updated_content,
-        )
-        .await?;
+            // Update the entry
+            update_entry(
+                &config.miniflux.url,
+                &config.miniflux.username,
+                &config.miniflux.password,
+                entry.id,
+                &updated_content,
+            )
+            .await?;
+        }
     }
 
     Ok(())
