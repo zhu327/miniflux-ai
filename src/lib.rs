@@ -222,14 +222,13 @@ async fn generate_and_update_entry(
     Ok(())
 }
 
-#[event(scheduled)]
-async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-    let config = &Config {
+fn build_config(env: &Env) -> Config {
+    Config {
         whitelist: env
             .var("WHITELIST_URL")
             .unwrap()
             .to_string()
-            .split(",")
+            .split(',')
             .map(|s| s.to_string())
             .collect(),
         openai: OpenAi {
@@ -242,7 +241,12 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
             username: env.var("MINIFLUX_USERNAME").unwrap().to_string(),
             password: env.var("MINIFLUX_PASSWORD").unwrap().to_string(),
         },
-    };
+    }
+}
+
+#[event(scheduled)]
+async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    let config = build_config(&env);
 
     // 查询未读文章
     let entries = get_entries(
@@ -258,7 +262,10 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 
     // Create a stream to process tasks with concurrency limit
     let _: Vec<_> = stream::iter(entries.entries)
-        .map(|entry| async move { generate_and_update_entry(config, entry).await })
+        .map(|entry| {
+            let config = &config;
+            async move { generate_and_update_entry(config, entry).await }
+        })
         .buffer_unordered(max_concurrent_tasks)
         .collect()
         .await;
@@ -299,25 +306,7 @@ async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response
         return Response::ok("Ignored non-new_entries event");
     };
 
-    let config = &Config {
-        whitelist: env
-            .var("WHITELIST_URL")
-            .unwrap()
-            .to_string()
-            .split(",")
-            .map(|s| s.to_string())
-            .collect(),
-        openai: OpenAi {
-            url: env.var("OPENAI_URL").unwrap().to_string(),
-            token: env.var("OPENAI_TOKEN").unwrap().to_string(),
-            model: env.var("OPENAI_MODEL").unwrap().to_string(),
-        },
-        miniflux: Miniflux {
-            url: env.var("MINIFLUX_URL").unwrap().to_string(),
-            username: env.var("MINIFLUX_USERNAME").unwrap().to_string(),
-            password: env.var("MINIFLUX_PASSWORD").unwrap().to_string(),
-        },
-    };
+    let config = build_config(&env);
 
     if !config.whitelist.contains(&webhook_payload.feed.site_url) {
         return Response::ok("Ignored non-whitelist feed");
@@ -327,7 +316,10 @@ async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response
     let max_concurrent_tasks = 5;
 
     let _: Vec<_> = stream::iter(webhook_payload.entries)
-        .map(|entry| async move { generate_and_update_entry(config, entry).await })
+        .map(|entry| {
+            let config = &config;
+            async move { generate_and_update_entry(config, entry).await }
+        })
         .buffer_unordered(max_concurrent_tasks)
         .collect()
         .await;
