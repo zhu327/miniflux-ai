@@ -12,6 +12,7 @@ crons = ["*/5 * * * *"]
 MINIFLUX_URL = "your miniflux url"
 MINIFLUX_USERNAME = "your miniflux username"
 MINIFLUX_PASSWORD = "your miniflux password"
+MINIFLUX_WEBHOOK_SECRET = "your miniflux webhook secret"
 OPENAI_URL = "https://api.cloudflare.com/client/v4/accounts/{your cloudflare account}/ai"
 OPENAI_TOKEN = "your cloudflare workers AI token"
 OPENAI_MODEL = "@cf/qwen/qwen1.5-14b-chat-awq"

@@ -1,9 +1,11 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use futures::{stream, StreamExt};
+use hmac::{Hmac, Mac};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashSet;
-use worker::{event, Env, ScheduleContext, ScheduledEvent};
+use worker::{event, Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent};
 
 #[derive(Debug, Deserialize)]
 struct Feed {
@@ -14,11 +16,18 @@ struct Feed {
 struct Entry {
     id: u64,
     content: String,
-    feed: Feed,
+    feed: Option<Feed>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse {
+    entries: Vec<Entry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WebhookPayload {
+    event_type: String,
+    feed: Feed,
     entries: Vec<Entry>,
 }
 
@@ -160,7 +169,12 @@ async fn generate_and_update_entry(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let content: &str = &entry.content;
     // Check if the content should be summarized and if the site is whitelisted
-    if content.starts_with("<pre") || !config.whitelist.contains(&entry.feed.site_url) {
+    if content.starts_with("<pre")
+        || entry
+            .feed
+            .as_ref()
+            .map_or(false, |feed| !config.whitelist.contains(&feed.site_url))
+    {
         return Ok(());
     }
 
@@ -244,11 +258,79 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 
     // Create a stream to process tasks with concurrency limit
     let _: Vec<_> = stream::iter(entries.entries)
-        .map(|entry| {
-            let config = &config;
-            async move { generate_and_update_entry(config, entry).await }
-        })
+        .map(|entry| async move { generate_and_update_entry(config, entry).await })
         .buffer_unordered(max_concurrent_tasks)
         .collect()
         .await;
+}
+
+// 验证 Miniflux 的 Webhook 请求签名
+fn validate_signature(secret: &str, payload: &str, signature: &str) -> bool {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
+    mac.update(payload.as_bytes());
+    let result = mac.finalize();
+    let computed_signature = hex::encode(result.into_bytes());
+    computed_signature == signature
+}
+
+#[event(fetch)]
+async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response> {
+    // 检查请求方法
+    if req.method() != Method::Post {
+        return Response::error("Method Not Allowed", 405);
+    }
+
+    // 提取请求体和签名
+    let payload = req.text().await?;
+    let signature = req.headers().get("X-Miniflux-Signature")?.unwrap();
+
+    let secret = env.var("MINIFLUX_WEBHOOK_SECRET").unwrap().to_string();
+
+    // 验证签名
+    if !validate_signature(&secret, &payload, &signature) {
+        return Response::error("Invalid signature", 401);
+    };
+
+    // 解析请求体
+    let webhook_payload: WebhookPayload = serde_json::from_str(&payload)?;
+
+    if webhook_payload.event_type != "new_entries" {
+        return Response::ok("Ignored non-new_entries event");
+    };
+
+    let config = &Config {
+        whitelist: env
+            .var("WHITELIST_URL")
+            .unwrap()
+            .to_string()
+            .split(",")
+            .map(|s| s.to_string())
+            .collect(),
+        openai: OpenAi {
+            url: env.var("OPENAI_URL").unwrap().to_string(),
+            token: env.var("OPENAI_TOKEN").unwrap().to_string(),
+            model: env.var("OPENAI_MODEL").unwrap().to_string(),
+        },
+        miniflux: Miniflux {
+            url: env.var("MINIFLUX_URL").unwrap().to_string(),
+            username: env.var("MINIFLUX_USERNAME").unwrap().to_string(),
+            password: env.var("MINIFLUX_PASSWORD").unwrap().to_string(),
+        },
+    };
+
+    if !config.whitelist.contains(&webhook_payload.feed.site_url) {
+        return Response::ok("Ignored non-whitelist feed");
+    };
+
+    // 处理每个新文章的生成和更新，限制并发为 5 个任务
+    let max_concurrent_tasks = 5;
+
+    let _: Vec<_> = stream::iter(webhook_payload.entries)
+        .map(|entry| async move { generate_and_update_entry(config, entry).await })
+        .buffer_unordered(max_concurrent_tasks)
+        .collect()
+        .await;
+
+    Response::ok("Webhook handled")
 }

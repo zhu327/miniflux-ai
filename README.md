@@ -4,7 +4,7 @@ This Cloudflare Workers tool automatically adds AI-generated summaries to articl
 
 ## Features
 
-- **Automated Summarization**: Fetches unread articles from Miniflux, generates concise summaries using AI, and updates the articles with the summaries.
+- **Automated Summarization**: Automatically processes new articles received via Miniflux webhooks, generates concise summaries using AI, and updates the articles with the summaries.
 - **Customizable**: Configure the list of whitelisted websites, API endpoints, and AI model parameters through environment variables.
 - **Concurrency**: Uses asynchronous Rust features to handle multiple articles concurrently, ensuring quick processing.
 - **Cloudflare Integration**: Deployed as a serverless function on Cloudflare Workers, leveraging the scalability and performance of Cloudflare's global network.
@@ -39,6 +39,7 @@ The tool is configured using environment variables, which are set in the `wrangl
 - `MINIFLUX_URL`: Your Miniflux instance URL.
 - `MINIFLUX_USERNAME`: Your Miniflux username.
 - `MINIFLUX_PASSWORD`: Your Miniflux password.
+- `MINIFLUX_WEBHOOK_SECRET`: The secret key for validating incoming webhook requests from Miniflux.
 - `OPENAI_URL`: The endpoint for the OpenAI API.
 - `OPENAI_TOKEN`: Your OpenAI API token.
 - `OPENAI_MODEL`: The model ID to use for generating summaries. We recommend using the `@cf/qwen/qwen1.5-14b-chat-awq` model for best results.
@@ -46,7 +47,7 @@ The tool is configured using environment variables, which are set in the `wrangl
 
 ### Usage
 
-The tool runs as a scheduled Cloudflare Worker, querying for unread articles every 5 minutes. If an article is from a whitelisted site and does not contain code blocks, it generates a summary and updates the article.
+The tool is triggered by incoming webhook requests from Miniflux whenever new articles are available. If an article is from a whitelisted site and does not contain code blocks, it generates a summary and updates the article.
 
 ### Contributing
 
