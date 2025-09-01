@@ -196,7 +196,6 @@ async fn fetch_content_with_cloudflare(
         .post(&render_url)
         .headers(headers.clone())
         .json(&render_request)
-        .timeout(std::time::Duration::from_secs(600))
         .send()
         .await?;
 
@@ -238,7 +237,6 @@ async fn fetch_content_with_cloudflare(
             format!("multipart/form-data; boundary={boundary}"),
         )
         .body(body)
-        .timeout(std::time::Duration::from_secs(600))
         .send()
         .await?;
 
@@ -277,7 +275,6 @@ async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error
     let response = client
         .get(&jina_reader_url)
         .headers(headers)
-        .timeout(std::time::Duration::from_secs(60))
         .send()
         .await?;
 
