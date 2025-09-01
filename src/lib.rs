@@ -272,11 +272,7 @@ async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error
         ("User-Agent".parse()?, "MyBookmarkProcessor/1.0".parse()?),
     ]);
 
-    let response = client
-        .get(&jina_reader_url)
-        .headers(headers)
-        .send()
-        .await?;
+    let response = client.get(&jina_reader_url).headers(headers).send().await?;
 
     let full_text = response.text().await?;
 
@@ -348,17 +344,16 @@ async fn generate_and_update_entry(
     }
 
     // Special handling for m.ichouti.cn - fetch content if empty or very short
-    let is_ichouti = if let Some(site_url) = feed_site_url {
-        site_url.contains("m.ichouti.cn")
+    let need_fetch = if let Some(site_url) = feed_site_url {
+        site_url.contains("m.ichouti.cn") || site_url.contains("news.ycombinator.com")
     } else {
-        entry
-            .feed
-            .as_ref()
-            .is_some_and(|feed| feed.site_url.contains("m.ichouti.cn"))
+        entry.feed.as_ref().is_some_and(|feed| {
+            feed.site_url.contains("m.ichouti.cn") || feed.site_url.contains("news.ycombinator.com")
+        })
     };
 
     // For summary generation, use fetched content for ichouti sites if original is empty/short
-    let summary_content = if is_ichouti {
+    let summary_content = if need_fetch {
         match fetch_article_content(config, &entry.url).await {
             Ok(fetched_content) => {
                 if !fetched_content.trim().is_empty() {
