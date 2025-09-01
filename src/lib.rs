@@ -3,6 +3,7 @@ use futures::{stream, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use serde_json;
 use sha2::Sha256;
 use std::collections::HashSet;
 use worker::{event, Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent};
@@ -15,6 +16,7 @@ struct Feed {
 #[derive(Debug, Deserialize)]
 struct Entry {
     id: u64,
+    url: String,
     content: String,
     feed: Option<Feed>,
 }
@@ -116,6 +118,30 @@ struct ChatCompletionResponse {
     choices: Vec<ChatCompletionChoice>,
 }
 
+#[derive(Serialize)]
+struct CloudflareRenderRequest {
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct CloudflareRenderResponse {
+    success: bool,
+    result: Option<String>,
+    errors: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+struct CloudflareMarkdownResponse {
+    success: bool,
+    result: Option<Vec<CloudflareMarkdownResult>>,
+    errors: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+struct CloudflareMarkdownResult {
+    data: String,
+}
+
 async fn request_openai_chat_completion(
     base_url: &str,
     api_key: &str,
@@ -145,6 +171,149 @@ async fn request_openai_chat_completion(
     }
 }
 
+async fn fetch_content_with_cloudflare(
+    cloudflare: &Cloudflare,
+    url: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    let headers = reqwest::header::HeaderMap::from_iter([
+        (
+            AUTHORIZATION,
+            format!("Bearer {}", cloudflare.api_token).parse()?,
+        ),
+        (CONTENT_TYPE, "application/json".parse()?),
+    ]);
+
+    // Step 1: Browser rendering to get HTML
+    let render_url = format!(
+        "https://api.cloudflare.com/client/v4/accounts/{}/browser-rendering/content",
+        cloudflare.account_id
+    );
+    let render_request = CloudflareRenderRequest {
+        url: url.to_string(),
+    };
+
+    println!("    > 正在通过 Cloudflare 浏览器渲染获取 HTML: {}", url);
+    let render_response = client
+        .post(&render_url)
+        .headers(headers.clone())
+        .json(&render_request)
+        .timeout(std::time::Duration::from_secs(600))
+        .send()
+        .await?;
+
+    let render_data: CloudflareRenderResponse = render_response.json().await?;
+
+    if !render_data.success {
+        return Err(format!(
+            "Cloudflare 浏览器渲染失败: {:?}",
+            render_data.errors.unwrap_or_default()
+        )
+        .into());
+    }
+
+    let html_content = render_data.result.ok_or("No HTML content returned")?;
+
+    // Step 2: Convert HTML to Markdown using Cloudflare AI
+    let markdown_url = format!(
+        "https://api.cloudflare.com/client/v4/accounts/{}/ai/tomarkdown",
+        cloudflare.account_id
+    );
+
+    println!("    > 正在通过 Cloudflare AI 将 HTML 转换为 Markdown...");
+
+    // Create multipart form data manually
+    let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    let mut body = String::new();
+
+    body.push_str(&format!("--{}\r\n", boundary));
+    body.push_str(
+        "Content-Disposition: form-data; name=\"files\"; filename=\"virtual_file.html\"\r\n",
+    );
+    body.push_str("Content-Type: text/html\r\n\r\n");
+    body.push_str(&html_content);
+    body.push_str(&format!("\r\n--{}--\r\n", boundary));
+
+    let markdown_response = client
+        .post(&markdown_url)
+        .header(AUTHORIZATION, format!("Bearer {}", cloudflare.api_token))
+        .header(
+            "Content-Type",
+            format!("multipart/form-data; boundary={}", boundary),
+        )
+        .body(body)
+        .timeout(std::time::Duration::from_secs(600))
+        .send()
+        .await?;
+
+    let markdown_data: CloudflareMarkdownResponse = markdown_response.json().await?;
+
+    if !markdown_data.success {
+        return Err(format!(
+            "Cloudflare AI Markdown 转换失败: {:?}",
+            markdown_data.errors.unwrap_or_default()
+        )
+        .into());
+    }
+
+    let markdown_result = markdown_data.result.ok_or("No markdown result returned")?;
+    if markdown_result.is_empty() {
+        return Err("Cloudflare AI Markdown 转换未返回任何结果".into());
+    }
+
+    let markdown_content = &markdown_result[0].data;
+    if markdown_content.is_empty() {
+        return Err("Cloudflare AI Markdown 转换未返回任何内容".into());
+    }
+
+    Ok(markdown_content.trim().to_string())
+}
+
+async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let jina_reader_url = format!("https://r.jina.ai/{}", url);
+    let client = reqwest::Client::new();
+
+    let headers = reqwest::header::HeaderMap::from_iter([
+        ("Accept".parse()?, "text/plain".parse()?),
+        ("User-Agent".parse()?, "MyBookmarkProcessor/1.0".parse()?),
+    ]);
+
+    println!("    > 正在通过 Jina Reader 获取内容: {}", url);
+    let response = client
+        .get(&jina_reader_url)
+        .headers(headers)
+        .timeout(std::time::Duration::from_secs(60))
+        .send()
+        .await?;
+
+    let full_text = response.text().await?;
+
+    if let Some(content_part) = full_text.split("Markdown Content:\n").nth(1) {
+        Ok(content_part.trim().to_string())
+    } else {
+        println!("    > 警告: Jina Reader 未返回预期的 'Markdown Content:' 格式");
+        Ok(full_text.trim().to_string())
+    }
+}
+
+async fn fetch_article_content(
+    config: &Config,
+    url: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if url.contains("mp.weixin.qq.com") {
+        if let Some(cloudflare) = &config.cloudflare {
+            println!("  > 检测到微信公众号链接，将使用 Cloudflare 抓取...");
+            return fetch_content_with_cloudflare(cloudflare, url).await;
+        } else {
+            println!("  > 检测到微信公众号链接但未配置 Cloudflare，使用 Jina Reader 抓取...");
+            return fetch_content_with_jina(url).await;
+        }
+    } else {
+        println!("  > 使用 Jina Reader 抓取...");
+        return fetch_content_with_jina(url).await;
+    }
+}
+
 struct Miniflux {
     url: String,
     username: String,
@@ -157,24 +326,70 @@ struct OpenAi {
     model: String,
 }
 
+struct Cloudflare {
+    account_id: String,
+    api_token: String,
+}
+
 struct Config {
     miniflux: Miniflux,
     openai: OpenAi,
+    cloudflare: Option<Cloudflare>,
     whitelist: HashSet<String>,
 }
 
 async fn generate_and_update_entry(
     config: &Config,
     entry: Entry,
+    feed_site_url: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let content: &str = &entry.content;
-    // Check if the content should be summarized and if the site is whitelisted
-    if content.starts_with("<pre")
-        || entry
+    let mut content: String = entry.content.clone();
+
+    // Check if the site is whitelisted
+    if entry
+        .feed
+        .as_ref()
+        .map_or(false, |feed| !config.whitelist.contains(&feed.site_url))
+    {
+        return Ok(());
+    }
+
+    // Check if content already has AI summary
+    if content.starts_with("<pre") {
+        return Ok(());
+    }
+
+    // Special handling for m.ichouti.cn - fetch content if empty or very short
+    let is_ichouti = if let Some(site_url) = feed_site_url {
+        site_url.contains("m.ichouti.cn")
+    } else {
+        entry
             .feed
             .as_ref()
-            .map_or(false, |feed| !config.whitelist.contains(&feed.site_url))
-    {
+            .map_or(false, |feed| feed.site_url.contains("m.ichouti.cn"))
+    };
+
+    if is_ichouti {
+        println!("检测到 m.ichouti.cn feed 且内容为空或过短，尝试获取文章内容...");
+        match fetch_article_content(config, &entry.url).await {
+            Ok(fetched_content) => {
+                if !fetched_content.trim().is_empty() {
+                    content = fetched_content;
+                    println!("成功获取到文章内容，长度: {}", content.len());
+                } else {
+                    println!("获取到的内容为空，跳过处理");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                println!("获取文章内容失败: {}", e);
+                return Ok(());
+            }
+        }
+    }
+
+    // Skip if content is still empty after potential fetch
+    if content.trim().is_empty() {
         return Ok(());
     }
 
@@ -223,6 +438,18 @@ async fn generate_and_update_entry(
 }
 
 fn build_config(env: &Env) -> Config {
+    let cloudflare = if let (Ok(account_id), Ok(api_token)) = (
+        env.var("CLOUDFLARE_ACCOUNT_ID"),
+        env.var("CLOUDFLARE_API_TOKEN"),
+    ) {
+        Some(Cloudflare {
+            account_id: account_id.to_string(),
+            api_token: api_token.to_string(),
+        })
+    } else {
+        None
+    };
+
     Config {
         whitelist: env
             .var("WHITELIST_URL")
@@ -241,6 +468,7 @@ fn build_config(env: &Env) -> Config {
             username: env.var("MINIFLUX_USERNAME").unwrap().to_string(),
             password: env.var("MINIFLUX_PASSWORD").unwrap().to_string(),
         },
+        cloudflare,
     }
 }
 
@@ -264,7 +492,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     let _: Vec<_> = stream::iter(entries.entries)
         .map(|entry| {
             let config = &config;
-            async move { generate_and_update_entry(config, entry).await }
+            async move { generate_and_update_entry(config, entry, None).await }
         })
         .buffer_unordered(max_concurrent_tasks)
         .collect()
@@ -315,10 +543,12 @@ async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response
     // 处理每个新文章的生成和更新，限制并发为 5 个任务
     let max_concurrent_tasks = 5;
 
+    let feed_site_url = &webhook_payload.feed.site_url;
     let _: Vec<_> = stream::iter(webhook_payload.entries)
         .map(|entry| {
             let config = &config;
-            async move { generate_and_update_entry(config, entry).await }
+            let site_url = feed_site_url;
+            async move { generate_and_update_entry(config, entry, Some(site_url)).await }
         })
         .buffer_unordered(max_concurrent_tasks)
         .collect()
