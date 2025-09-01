@@ -3,7 +3,6 @@ use futures::{stream, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sha2::Sha256;
 use std::collections::HashSet;
 use worker::{event, Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent};
@@ -49,12 +48,12 @@ async fn get_entries(
     // 使用 Basic Auth 进行身份验证
     let auth = format!(
         "Basic {}",
-        STANDARD.encode(format!("{}:{}", username, password))
+        STANDARD.encode(format!("{username}:{password}"))
     );
 
     // 发送 GET 请求
     let response = client
-        .get(&format!("{}/v1/entries?status=unread&limit=100", base_url))
+        .get(format!("{base_url}/v1/entries?status=unread&limit=100"))
         .header(AUTHORIZATION, auth)
         .header(CONTENT_TYPE, "application/json")
         .send()
@@ -76,10 +75,10 @@ async fn update_entry(
 
     let auth = format!(
         "Basic {}",
-        STANDARD.encode(format!("{}:{}", username, password))
+        STANDARD.encode(format!("{username}:{password}"))
     );
 
-    let url = format!("{}/v1/entries/{}", base_url, id);
+    let url = format!("{base_url}/v1/entries/{id}");
     let update_request = UpdateRequest {
         content: content.to_string(),
     };
@@ -155,8 +154,8 @@ async fn request_openai_chat_completion(
     };
 
     let response = client
-        .post(&format!("{}/v1/chat/completions", base_url))
-        .header(AUTHORIZATION, format!("Bearer {}", api_key))
+        .post(format!("{base_url}/v1/chat/completions"))
+        .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header(CONTENT_TYPE, "application/json")
         .json(&request_body)
         .send()
@@ -167,7 +166,7 @@ async fn request_openai_chat_completion(
         Ok(completion_response.choices[0].message.content.clone())
     } else {
         let error_message = response.text().await?;
-        Err(format!("Error: {:?}", error_message).into())
+        Err(format!("Error: {error_message:?}").into())
     }
 }
 
@@ -193,7 +192,6 @@ async fn fetch_content_with_cloudflare(
         url: url.to_string(),
     };
 
-    println!("    > 正在通过 Cloudflare 浏览器渲染获取 HTML: {}", url);
     let render_response = client
         .post(&render_url)
         .headers(headers.clone())
@@ -220,26 +218,24 @@ async fn fetch_content_with_cloudflare(
         cloudflare.account_id
     );
 
-    println!("    > 正在通过 Cloudflare AI 将 HTML 转换为 Markdown...");
-
     // Create multipart form data manually
     let boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
     let mut body = String::new();
 
-    body.push_str(&format!("--{}\r\n", boundary));
+    body.push_str(&format!("--{boundary}\r\n"));
     body.push_str(
         "Content-Disposition: form-data; name=\"files\"; filename=\"virtual_file.html\"\r\n",
     );
     body.push_str("Content-Type: text/html\r\n\r\n");
     body.push_str(&html_content);
-    body.push_str(&format!("\r\n--{}--\r\n", boundary));
+    body.push_str(&format!("\r\n--{boundary}--\r\n"));
 
     let markdown_response = client
         .post(&markdown_url)
         .header(AUTHORIZATION, format!("Bearer {}", cloudflare.api_token))
         .header(
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         )
         .body(body)
         .timeout(std::time::Duration::from_secs(600))
@@ -270,7 +266,7 @@ async fn fetch_content_with_cloudflare(
 }
 
 async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let jina_reader_url = format!("https://r.jina.ai/{}", url);
+    let jina_reader_url = format!("https://r.jina.ai/{url}");
     let client = reqwest::Client::new();
 
     let headers = reqwest::header::HeaderMap::from_iter([
@@ -278,7 +274,6 @@ async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error
         ("User-Agent".parse()?, "MyBookmarkProcessor/1.0".parse()?),
     ]);
 
-    println!("    > 正在通过 Jina Reader 获取内容: {}", url);
     let response = client
         .get(&jina_reader_url)
         .headers(headers)
@@ -291,7 +286,6 @@ async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error
     if let Some(content_part) = full_text.split("Markdown Content:\n").nth(1) {
         Ok(content_part.trim().to_string())
     } else {
-        println!("    > 警告: Jina Reader 未返回预期的 'Markdown Content:' 格式");
         Ok(full_text.trim().to_string())
     }
 }
@@ -302,14 +296,11 @@ async fn fetch_article_content(
 ) -> Result<String, Box<dyn std::error::Error>> {
     if url.contains("mp.weixin.qq.com") {
         if let Some(cloudflare) = &config.cloudflare {
-            println!("  > 检测到微信公众号链接，将使用 Cloudflare 抓取...");
             return fetch_content_with_cloudflare(cloudflare, url).await;
         } else {
-            println!("  > 检测到微信公众号链接但未配置 Cloudflare，使用 Jina Reader 抓取...");
             return fetch_content_with_jina(url).await;
         }
     } else {
-        println!("  > 使用 Jina Reader 抓取...");
         return fetch_content_with_jina(url).await;
     }
 }
@@ -343,13 +334,13 @@ async fn generate_and_update_entry(
     entry: Entry,
     feed_site_url: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut content: String = entry.content.clone();
+    let content: String = entry.content.clone();
 
     // Check if the site is whitelisted
     if entry
         .feed
         .as_ref()
-        .map_or(false, |feed| !config.whitelist.contains(&feed.site_url))
+        .is_some_and(|feed| !config.whitelist.contains(&feed.site_url))
     {
         return Ok(());
     }
@@ -366,30 +357,29 @@ async fn generate_and_update_entry(
         entry
             .feed
             .as_ref()
-            .map_or(false, |feed| feed.site_url.contains("m.ichouti.cn"))
+            .is_some_and(|feed| feed.site_url.contains("m.ichouti.cn"))
     };
 
-    if is_ichouti {
-        println!("检测到 m.ichouti.cn feed 且内容为空或过短，尝试获取文章内容...");
+    // For summary generation, use fetched content for ichouti sites if original is empty/short
+    let summary_content = if is_ichouti {
         match fetch_article_content(config, &entry.url).await {
             Ok(fetched_content) => {
                 if !fetched_content.trim().is_empty() {
-                    content = fetched_content;
-                    println!("成功获取到文章内容，长度: {}", content.len());
+                    fetched_content
                 } else {
-                    println!("获取到的内容为空，跳过处理");
                     return Ok(());
                 }
             }
-            Err(e) => {
-                println!("获取文章内容失败: {}", e);
+            Err(_) => {
                 return Ok(());
             }
         }
-    }
+    } else {
+        content.clone()
+    };
 
-    // Skip if content is still empty after potential fetch
-    if content.trim().is_empty() {
+    // Skip if both original content and summary content are empty
+    if content.trim().is_empty() && summary_content.trim().is_empty() {
         return Ok(());
     }
 
@@ -401,8 +391,7 @@ async fn generate_and_update_entry(
         Message {
             role: "user".to_string(),
             content: format!(
-                "The following is the input content:\n---\n {}",
-                content,
+                "The following is the input content:\n---\n {summary_content}",
             ),
         },
     ];
@@ -418,8 +407,7 @@ async fn generate_and_update_entry(
     {
         if !summary.trim().is_empty() {
             let updated_content = format!(
-                "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{}</code></pre><hr><br />{}",
-                summary, content
+                "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{summary}</code></pre><hr><br />{content}"
             );
 
             // Update the entry
