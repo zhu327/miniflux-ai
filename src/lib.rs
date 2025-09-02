@@ -282,6 +282,11 @@ async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<Str
 
     let response = client.get(&jina_reader_url).headers(headers).send().await?;
 
+    // Check for rate limiting (429 status code)
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err("Jina API rate limited".into());
+    }
+
     let full_text = response.text().await?;
 
     if let Some(content_part) = full_text.split("Markdown Content:\n").nth(1) {
@@ -295,14 +300,26 @@ async fn fetch_article_content(
     config: &Config,
     url: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    // For WeChat articles, prefer Cloudflare if available
     if url.contains("mp.weixin.qq.com") {
         if let Some(cloudflare) = &config.cloudflare {
             return fetch_content_with_cloudflare(cloudflare, url).await;
-        } else {
-            return fetch_content_with_jina(url, config.jina_api_key.as_deref()).await;
         }
-    } else {
-        return fetch_content_with_jina(url, config.jina_api_key.as_deref()).await;
+    }
+    
+    // Try Jina first for all URLs
+    match fetch_content_with_jina(url, config.jina_api_key.as_deref()).await {
+        Ok(content) => Ok(content),
+        Err(e) => {
+            // If Jina fails due to rate limiting and Cloudflare is available, fallback to Cloudflare
+            if e.to_string().contains("Jina API rate limited") {
+                if let Some(cloudflare) = &config.cloudflare {
+                    return fetch_content_with_cloudflare(cloudflare, url).await;
+                }
+            }
+            // If not rate limited or no Cloudflare available, return the original error
+            Err(e)
+        }
     }
 }
 
