@@ -263,14 +263,22 @@ async fn fetch_content_with_cloudflare(
     Ok(markdown_content.trim().to_string())
 }
 
-async fn fetch_content_with_jina(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
     let jina_reader_url = format!("https://r.jina.ai/{url}");
     let client = reqwest::Client::new();
 
-    let headers = reqwest::header::HeaderMap::from_iter([
+    let mut headers = reqwest::header::HeaderMap::from_iter([
         ("Accept".parse()?, "text/plain".parse()?),
         ("User-Agent".parse()?, "MyBookmarkProcessor/1.0".parse()?),
     ]);
+
+    // Add Authorization header if API key is provided
+    if let Some(key) = api_key {
+        headers.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", key).parse()?,
+        );
+    }
 
     let response = client.get(&jina_reader_url).headers(headers).send().await?;
 
@@ -291,10 +299,10 @@ async fn fetch_article_content(
         if let Some(cloudflare) = &config.cloudflare {
             return fetch_content_with_cloudflare(cloudflare, url).await;
         } else {
-            return fetch_content_with_jina(url).await;
+            return fetch_content_with_jina(url, config.jina_api_key.as_deref()).await;
         }
     } else {
-        return fetch_content_with_jina(url).await;
+        return fetch_content_with_jina(url, config.jina_api_key.as_deref()).await;
     }
 }
 
@@ -319,6 +327,7 @@ struct Config {
     miniflux: Miniflux,
     openai: OpenAi,
     cloudflare: Option<Cloudflare>,
+    jina_api_key: Option<String>,
     whitelist: HashSet<String>,
 }
 
@@ -449,6 +458,7 @@ fn build_config(env: &Env) -> Config {
             password: env.var("MINIFLUX_PASSWORD").unwrap().to_string(),
         },
         cloudflare,
+        jina_api_key: env.var("JINA_API_KEY").ok().map(|s| s.to_string()),
     }
 }
 
