@@ -263,7 +263,10 @@ async fn fetch_content_with_cloudflare(
     Ok(markdown_content.trim().to_string())
 }
 
-async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+async fn fetch_content_with_jina(
+    url: &str,
+    api_key: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let jina_reader_url = format!("https://r.jina.ai/{url}");
     let client = reqwest::Client::new();
 
@@ -274,17 +277,16 @@ async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<Str
 
     // Add Authorization header if API key is provided
     if let Some(key) = api_key {
-        headers.insert(
-            AUTHORIZATION,
-            format!("Bearer {}", key).parse()?,
-        );
+        headers.insert(AUTHORIZATION, format!("Bearer {}", key).parse()?);
     }
 
     let response = client.get(&jina_reader_url).headers(headers).send().await?;
 
-    // Check for rate limiting (429 status code)
+    // Check for rate limiting (429 status code) or unavailable for legal reasons (451 status code)
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err("Jina API rate limited".into());
+    } else if response.status() == reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+        return Err("Jina API unavailable for legal reasons".into());
     }
 
     let full_text = response.text().await?;
@@ -306,18 +308,21 @@ async fn fetch_article_content(
             return fetch_content_with_cloudflare(cloudflare, url).await;
         }
     }
-    
+
     // Try Jina first for all URLs
     match fetch_content_with_jina(url, config.jina_api_key.as_deref()).await {
         Ok(content) => Ok(content),
         Err(e) => {
-            // If Jina fails due to rate limiting and Cloudflare is available, fallback to Cloudflare
-            if e.to_string().contains("Jina API rate limited") {
+            // If Jina fails due to rate limiting or unavailable for legal reasons and Cloudflare is available, fallback to Cloudflare
+            if e.to_string().contains("Jina API rate limited")
+                || e.to_string()
+                    .contains("Jina API unavailable for legal reasons")
+            {
                 if let Some(cloudflare) = &config.cloudflare {
                     return fetch_content_with_cloudflare(cloudflare, url).await;
                 }
             }
-            // If not rate limited or no Cloudflare available, return the original error
+            // If not rate limited or unavailable, or no Cloudflare available, return the original error
             Err(e)
         }
     }
