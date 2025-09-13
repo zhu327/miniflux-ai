@@ -99,6 +99,7 @@ async fn update_entry(
 struct ChatCompletionRequest {
     model: String,
     messages: Vec<Message>,
+    stream: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -151,22 +152,33 @@ async fn request_openai_chat_completion(
     let request_body = ChatCompletionRequest {
         model: model.to_string(),
         messages,
+        stream: false,
     };
 
     let response = client
-        .post(format!("{base_url}/v1/chat/completions"))
+        .post(base_url)
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header(CONTENT_TYPE, "application/json")
         .json(&request_body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| {
+            worker::console_log!("OpenAI API request failed: {}", e);
+            e
+        })?;
 
     if response.status().is_success() {
-        let completion_response: ChatCompletionResponse = response.json().await?;
+        let completion_response: ChatCompletionResponse = response.json().await
+            .map_err(|e| {
+                worker::console_log!("Failed to parse OpenAI response JSON: {}", e);
+                e
+            })?;
         Ok(completion_response.choices[0].message.content.clone())
     } else {
+        let status = response.status();
         let error_message = response.text().await?;
-        Err(format!("Error: {error_message:?}").into())
+        worker::console_log!("OpenAI API error - Status: {}, Response: {}", status, error_message);
+        Err(format!("OpenAI API error: Status {}, Response: {}", status, error_message).into())
     }
 }
 
