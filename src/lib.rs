@@ -5,7 +5,9 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashSet;
-use worker::{event, Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent};
+use worker::{
+    console_log, event, Context, Env, Method, Request, Response, ScheduleContext, ScheduledEvent,
+};
 
 #[derive(Debug, Deserialize)]
 struct Feed {
@@ -27,7 +29,6 @@ struct ApiResponse {
 
 #[derive(Debug, Deserialize)]
 struct WebhookPayload {
-    event_type: String,
     feed: Feed,
     entries: Vec<Entry>,
 }
@@ -99,6 +100,7 @@ async fn update_entry(
 struct ChatCompletionRequest {
     model: String,
     messages: Vec<Message>,
+    stream: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -151,22 +153,40 @@ async fn request_openai_chat_completion(
     let request_body = ChatCompletionRequest {
         model: model.to_string(),
         messages,
+        stream: false,
     };
 
     let response = client
-        .post(format!("{base_url}/v1/chat/completions"))
+        .post(base_url)
         .header(AUTHORIZATION, format!("Bearer {api_key}"))
         .header(CONTENT_TYPE, "application/json")
         .json(&request_body)
         .send()
-        .await?;
+        .await
+        .map_err(|e| {
+            console_log!("OpenAI API request failed: {}", e);
+            e
+        })?;
 
     if response.status().is_success() {
-        let completion_response: ChatCompletionResponse = response.json().await?;
+        let completion_response: ChatCompletionResponse = response.json().await.map_err(|e| {
+            console_log!("Failed to parse OpenAI response JSON: {}", e);
+            e
+        })?;
         Ok(completion_response.choices[0].message.content.clone())
     } else {
+        let status = response.status();
         let error_message = response.text().await?;
-        Err(format!("Error: {error_message:?}").into())
+        console_log!(
+            "OpenAI API error - Status: {}, Response: {}",
+            status,
+            error_message
+        );
+        Err(format!(
+            "OpenAI API error: Status {}, Response: {}",
+            status, error_message
+        )
+        .into())
     }
 }
 
@@ -263,7 +283,10 @@ async fn fetch_content_with_cloudflare(
     Ok(markdown_content.trim().to_string())
 }
 
-async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+async fn fetch_content_with_jina(
+    url: &str,
+    api_key: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let jina_reader_url = format!("https://r.jina.ai/{url}");
     let client = reqwest::Client::new();
 
@@ -274,17 +297,16 @@ async fn fetch_content_with_jina(url: &str, api_key: Option<&str>) -> Result<Str
 
     // Add Authorization header if API key is provided
     if let Some(key) = api_key {
-        headers.insert(
-            AUTHORIZATION,
-            format!("Bearer {}", key).parse()?,
-        );
+        headers.insert(AUTHORIZATION, format!("Bearer {}", key).parse()?);
     }
 
     let response = client.get(&jina_reader_url).headers(headers).send().await?;
 
-    // Check for rate limiting (429 status code)
+    // Check for rate limiting (429 status code) or unavailable for legal reasons (451 status code)
     if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return Err("Jina API rate limited".into());
+    } else if response.status() == reqwest::StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS {
+        return Err("Jina API unavailable for legal reasons".into());
     }
 
     let full_text = response.text().await?;
@@ -306,18 +328,21 @@ async fn fetch_article_content(
             return fetch_content_with_cloudflare(cloudflare, url).await;
         }
     }
-    
+
     // Try Jina first for all URLs
     match fetch_content_with_jina(url, config.jina_api_key.as_deref()).await {
         Ok(content) => Ok(content),
         Err(e) => {
-            // If Jina fails due to rate limiting and Cloudflare is available, fallback to Cloudflare
-            if e.to_string().contains("Jina API rate limited") {
+            // If Jina fails due to rate limiting or unavailable for legal reasons and Cloudflare is available, fallback to Cloudflare
+            if e.to_string().contains("Jina API rate limited")
+                || e.to_string()
+                    .contains("Jina API unavailable for legal reasons")
+            {
                 if let Some(cloudflare) = &config.cloudflare {
                     return fetch_content_with_cloudflare(cloudflare, url).await;
                 }
             }
-            // If not rate limited or no Cloudflare available, return the original error
+            // If not rate limited or unavailable, or no Cloudflare available, return the original error
             Err(e)
         }
     }
@@ -539,6 +564,15 @@ async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response
         return Response::error("Method Not Allowed", 405);
     }
 
+    // 检查事件类型
+    if let Some(event_type) = req.headers().get("x-miniflux-event-type")? {
+        if event_type != "new_entries" {
+            return Response::ok("Ignored non-new_entries event");
+        }
+    } else {
+        return Response::error("Missing x-miniflux-event-type header", 400);
+    }
+
     // 提取请求体和签名
     let payload = req.text().await?;
     let signature = req.headers().get("X-Miniflux-Signature")?.unwrap();
@@ -552,10 +586,6 @@ async fn main(mut req: Request, env: Env, _: Context) -> worker::Result<Response
 
     // 解析请求体
     let webhook_payload: WebhookPayload = serde_json::from_str(&payload)?;
-
-    if webhook_payload.event_type != "new_entries" {
-        return Response::ok("Ignored non-new_entries event");
-    };
 
     let config = build_config(&env);
 
