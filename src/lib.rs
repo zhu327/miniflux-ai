@@ -369,14 +369,30 @@ async fn generate_and_update_entry(
         return Ok(());
     }
 
-    // Special handling for m.ichouti.cn - fetch content if empty or very short
-    let need_fetch = if let Some(site_url) = feed_site_url {
-        site_url.contains("m.ichouti.cn") || site_url.contains("news.ycombinator.com")
+    // Skip ichouti feeds that redirect to Weibo
+    let is_m_ichouti_feed = if let Some(site_url) = feed_site_url {
+        site_url.contains("m.ichouti.cn")
     } else {
-        entry.feed.as_ref().is_some_and(|feed| {
-            feed.site_url.contains("m.ichouti.cn") || feed.site_url.contains("news.ycombinator.com")
-        })
+        entry
+            .feed
+            .as_ref()
+            .is_some_and(|feed| feed.site_url.contains("m.ichouti.cn"))
     };
+    if is_m_ichouti_feed && entry.url.contains("weibo.com") {
+        return Ok(());
+    }
+
+    let is_hn_feed = if let Some(site_url) = feed_site_url {
+        site_url.contains("news.ycombinator.com")
+    } else {
+        entry
+            .feed
+            .as_ref()
+            .is_some_and(|feed| feed.site_url.contains("news.ycombinator.com"))
+    };
+
+    // Special handling for ichouti / HN - fetch content if empty or very short
+    let need_fetch = is_m_ichouti_feed || is_hn_feed;
 
     // For summary generation, use fetched content for ichouti sites if original is empty/short
     let summary_content = if need_fetch {
