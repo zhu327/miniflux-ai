@@ -322,13 +322,6 @@ async fn fetch_article_content(
     config: &Config,
     url: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // For WeChat articles, prefer Cloudflare if available
-    if url.contains("mp.weixin.qq.com") {
-        if let Some(cloudflare) = &config.cloudflare {
-            return fetch_content_with_cloudflare(cloudflare, url).await;
-        }
-    }
-
     // Try Jina first for all URLs
     match fetch_content_with_jina(url, config.jina_api_key.as_deref()).await {
         Ok(content) => Ok(content),
@@ -394,19 +387,6 @@ async fn generate_and_update_entry(
         return Ok(());
     }
 
-    // Skip ichouti feeds that redirect to Weibo
-    let is_m_ichouti_feed = if let Some(site_url) = feed_site_url {
-        site_url.contains("m.ichouti.cn")
-    } else {
-        entry
-            .feed
-            .as_ref()
-            .is_some_and(|feed| feed.site_url.contains("m.ichouti.cn"))
-    };
-    if is_m_ichouti_feed && entry.url.contains("weibo.com") {
-        return Ok(());
-    }
-
     let is_hn_feed = if let Some(site_url) = feed_site_url {
         site_url.contains("news.ycombinator.com")
     } else {
@@ -416,11 +396,8 @@ async fn generate_and_update_entry(
             .is_some_and(|feed| feed.site_url.contains("news.ycombinator.com"))
     };
 
-    // Special handling for ichouti / HN - fetch content if empty or very short
-    let need_fetch = is_m_ichouti_feed || is_hn_feed;
-
     // For summary generation, use fetched content for ichouti sites if original is empty/short
-    let summary_content = if need_fetch {
+    let summary_content = if is_hn_feed {
         match fetch_article_content(config, &entry.url).await {
             Ok(fetched_content) => {
                 if !fetched_content.trim().is_empty() {
