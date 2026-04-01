@@ -318,24 +318,47 @@ async fn fetch_content_with_jina(
     }
 }
 
+async fn fetch_content_with_defuddle(
+    url: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let defuddle_url = format!("https://defuddle.md/{url}");
+    let client = reqwest::Client::new();
+
+    let response = client.get(&defuddle_url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(format!("Defuddle API error: status {}", response.status()).into());
+    }
+
+    let content = response.text().await?;
+    if content.trim().is_empty() {
+        return Err("Defuddle returned empty content".into());
+    }
+
+    Ok(content.trim().to_string())
+}
+
 async fn fetch_article_content(
     config: &Config,
     url: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    // Try Jina first for all URLs
+    // 1. Try Defuddle first
+    match fetch_content_with_defuddle(url).await {
+        Ok(content) => return Ok(content),
+        Err(e) => {
+            console_log!("Defuddle failed for {}: {}, trying Jina...", url, e);
+        }
+    }
+
+    // 2. Fallback to Jina
     match fetch_content_with_jina(url, config.jina_api_key.as_deref()).await {
         Ok(content) => Ok(content),
         Err(e) => {
-            // If Jina fails due to rate limiting or unavailable for legal reasons and Cloudflare is available, fallback to Cloudflare
-            if e.to_string().contains("Jina API rate limited")
-                || e.to_string()
-                    .contains("Jina API unavailable for legal reasons")
-            {
-                if let Some(cloudflare) = &config.cloudflare {
-                    return fetch_content_with_cloudflare(cloudflare, url).await;
-                }
+            console_log!("Jina failed for {}: {}, trying Cloudflare...", url, e);
+            // 3. Fallback to Cloudflare
+            if let Some(cloudflare) = &config.cloudflare {
+                return fetch_content_with_cloudflare(cloudflare, url).await;
             }
-            // If not rate limited or unavailable, or no Cloudflare available, return the original error
             Err(e)
         }
     }
