@@ -406,7 +406,7 @@ async fn generate_and_update_entry(
     }
 
     // Check if content already has AI summary
-    if content.starts_with("<pre") {
+    if content.starts_with("<blockquote") || content.starts_with("<pre") {
         return Ok(());
     }
 
@@ -466,7 +466,7 @@ async fn generate_and_update_entry(
     {
         if !summary.trim().is_empty() {
             let updated_content = format!(
-                "<pre style=\"white-space: pre-wrap;\"><code>\n💡AI 摘要：\n{summary}</code></pre><hr><br />{content}"
+                "<blockquote><p>💡AI 摘要：</p><p>{summary}</p></blockquote><hr>{content}"
             );
 
             // Update the entry
